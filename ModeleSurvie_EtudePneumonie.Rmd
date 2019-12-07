@@ -1,0 +1,280 @@
+---
+title: Modèle de survie - Hospitalisation des enfants atteints de pneumonie
+author: "Marlene Chevalier"
+date: "10 décembre 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE, echo=TRUE, warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE)
+getwd()
+```
+
+```{r lib, echo=FALSE}
+library("survival")
+library("KMsurv")
+library("ggplot2")
+library("ggfortify")
+library("MASS")
+``` 
+
+###Sujet 
+
+Il s'agit d'étudier l'impact de l'allaitement maternel sur la protection contre la pneumonie des enfants dans leur première année de vie. La variable d'intérêt est l'hospitalisation des enfants atteints de pneumonie.
+Le jeu de données est issu d'une enquête menée entre 1979 et 1986 pour *the National Longitudinal Survey of Youth (NLSY)*. 
+
+### Jeu de données
+Il s'agit du jeu de données *pneumon* du package (KMsurv), que j'ai dû charger via une version csv suite à des problèmes sur le package KMsurv.
+
+```{r chgmt,echo=FALSE}
+d=read.csv("pneumon.csv",header=TRUE)
+summary(d)
+nrow=nrow(d)
+nvar=length(d)
+attach(d)
+
+cl.chldage=class(chldage)
+cl.hospital=class(hospital)
+cl.mthage=class(mthage)
+cl.urban=class(urban)
+cl.alcohol=class(alcohol)
+cl.smoke=class(smoke)
+cl.region=class(region)
+cl.poverty=class(poverty)
+cl.bweight=class(bweight)
+cl.race=class(race)
+cl.edu=class(education)
+cl.nsibs=class(nsibs)
+cl.wmonth=class(wmonth)
+cl.sfmonth=class(sfmonth)
+cl.agepn=class(agepn)
+```
+Il contient `r nrow` lignes (enfants suivis) et `r nvar` variables :
+
+  -  **chldage** : age en mois de l'enfant atteints de pneumonie (`r cl.chldage` entre 0.5 et 12)
+  -  **hospital** : indicateur d'hospitalisation (`r cl.hospital`  1:oui / 0:non) 
+  -  **mthage** : age de la mère à la naissance de l'enfant, en année (`r cl.mthage` entre 14 et 29 )
+  -  **urban** : environnement de vie de la mère (`r cl.urban`  1:urbain  / 0:rural)
+  -  **alcohol** : niveau de comsommation mensuelle d'alcool par la mère pendant sa grossesse (`r cl.alcohol` entre 0 (pas d'alcool) et 4 (4 verres/mois) )
+  -  **smoke** :niveau de consommation de tabac par la mère pendant sa grossesse (`r cl.smoke`  entre 0 (aucune) et 2 (1 paquet et + /jour)) 
+  -  **region** : région d'habitation (`r cl.region` 1=NE, 2= centre Nord, 3=Sud, 4=Ouest) 
+  -  **poverty** : indice de pauvreté de la mère (`r cl.poverty`  1:oui / 0:non )
+  -  **bweight** : indicateur de poids à la naissance (`r cl.bweight` 1:normal/ 0 : poids inférieur à 5.5 livres = 3kg )
+  -  **race** : ethnie de la mère (`r cl.race` 1=white, 2=black, 3=other)
+  -  **education** : nombre d'années d'étude de la mère (`r cl.edu` entre 0 et 19)
+  -  **nsibs** : nombre de frères et soeurs de l'enfant (`r cl.nsibs` entre 0 et 6)
+  -  **wmonth** : age en mois auquel l'enfant a été sevré (`r cl.wmonth` entre 0 et 28)
+  -  **sfmonth** : age en mois auquel l'enfant est passé à l'alimentation solide (`r cl.sfmonth` entre 0 et 18)
+  -  **agepn** : age en mois de l'enfant hospitalisé pour pneumonie (`r cl.agepn` entre 0 et 12)
+
+
+### Q1 : Vérification des données importées
+
+Le jeu de données ne contient pas de données manquantes. .
+Les variables de niveaux ou indicatrices sont de classe integer, plutôt que d'être des factors. Convertissons les variables suivantes en factor : urban, alcohol, smoke, region, poverty, bweight, race.
+
+```{r verifimport, echo=FALSE}
+d2=d
+d2$urban=factor(d2$urban)
+d2$alcohol=factor(d2$alcohol)
+d2$smoke=factor(d2$smoke)
+d2$region=factor(d2$region)
+d2$poverty=factor(d2$poverty)
+d2$bweight=factor(d2$bweight)
+d2$race=factor(d2$race)
+summary(d2)
+```
+
+
+### Q2 : Graphique de la fonction de survie estimée par Kaplan-Meier
+
+La survie sera ici la probabilité pour un enfant d'être hospitalisé pour soigner une pneumonie après un certain nombre de mois de vie (chldage). Cette probabilité est décroissante (cf. graphique ci-dessous) : plus l'enfant est grand, moins il est probable qu'il soit hospitalisé pour soigner une pneumonie.  
+
+La probabilité pour un nouveau né de ne pas avoir développé une pneumonie avant 6 mois correspond à la survie à 6 mois : on lit une estimation de cette probabilité dans le summary de l'estimation de la fonction de survie (cf. ci-après) : pour time = 6, estimation = 98.1% et l'intervalle de confiance à 95% entre 97.6% et 98.6%.
+
+```{r survKM}
+KM_fit=survfit(Surv(chldage,hospital)~1,data=d2)
+autoplot(KM_fit,xlab="Age des enfants (en mois)", ylab="Survie : Probabilité d'être hospitalisé", main="Hospitalisation et pneumonie chez les enfants jusqu'à un an")
+summary(KM_fit)
+```
+
+
+### Q3 : Graphique de l'hospitalisation estimée par KM en fonction du critère d'allaitement /test d'égalité des fontions de survie
+
+La variable Z est créée pour indiquer si l'enfant a été allaité ou non : elle vaut 1 (enfant allaité) si l'age de sevrage est supérieur à 0; elle vaut 0 sinon (enfant non allaité). Par Z, on divise le jeu de données en 2 sous populations : les enfants allaités et les enfants non allaités.
+La probabilité de survie est plus grande pour les bébés (entre la naissance et 12 mois) qui ont été allaités : en effet par ex à 6 mois, un enfant allaité aura autour de 99.3% de chance de n'avoir pas encore été hospitalisé alors que pour un enfant non allaité, cette probabilité passe à 97.3%. (cf. graphique ci après : en bleu, la courbe de survie des enfants allaités, en rose celle des enfants non allaités).
+
+Le résultat du test d'égalité des fonctions survie (cf. ci-après) montre que les fonctions de survie des enfants allaités et celles pour les enfants non allaités sont significativement différentes. En effet, la pvalue du test (1xe-04) est inférieur à 5%, donc hypothèse d'égalité des 2 fonctions de survie est rejetée.
+
+```{r allait}
+# Z : variable indicatrice d'allaitement (1: allaitement/0:non allaitement)
+d2$Z=0
+d2$Z[(d2$wmonth)!=0]=1
+
+# estimation de la survie par KM pour les enfants allaités et non allaités
+KM_fitZ=survfit(Surv(chldage,hospital)~Z,data=d2)
+
+autoplot(survfit(Surv(chldage,hospital)~Z,data=d2),xlab="age des enfants (en mois)", ylab="Survie : Probabilité d'être hospitalisé", main="Hospitalisation / pneumonie / allaitement chez les enfants jusqu'à un an")
+
+summary(KM_fitZ)
+
+# test d'égalité des fonctions de survie des 2 sous-populations
+survdiff(Surv(chldage,hospital)~Z,data=d2)
+
+```
+
+
+### Q4 : Estimations des coefficients beta de la variable Z
+
+On utilise le modèle de Cox pour estimer le parametre beta et le test de WALD pour tester sa significativité. (cf. ci-après)
+Le test de Wald indique une p-value très petite (= 2e-04) : l'hypothèse de nullité de beta est donc rejetée. Le coefficient de Z est estimé à -1.0970, avec un écart type de 0.2973. Le ratio de hasard relatif à Z (exp(coef)) est à 0.3339.
+
+```{r betaZ}
+summary(coxph(Surv(chldage,hospital)~Z,data=d2))
+```
+
+
+### Q5 : Test des modèles incluant chaque facteur avec la variable Z
+
+**Modèle 1 : inclut l'age de la mère à la naissance** 
+Selon les résultats obtenus (cf.ci-après), la variable Z est toujours très significative. Mais l'age de la mère n'apparait pas comme signficatif.(cf. p-values)
+
+```{r mod1}
+mod1=coxph(Surv(chldage,hospital)~Z+mthage ,data=d2)
+summary(mod1)
+```
+
+**Modèle 2 : inclut l'environnement de vie de la mère**  
+Selon les résultats obtenus (cf.ci-après), la variable Z est toujours très significative. Mais l'environnement de vie de la mère n'apparait pas comme signficatif.(cf. p-values)
+
+```{r mod2}
+mod2=coxph(Surv(chldage,hospital)~Z+urban ,data=d2)
+summary(mod2)
+```
+
+**Modèle 3 : inclut la consommation d'alcool de la mère**  
+Selon les résultats obtenus (cf.ci-après), la variable Z est toujours très significative. Mais la consommation d'alcool de la mère pendant sa grossesse n'apparait pas comme signficative.(cf. p-values).
+```{r mod3}
+mod3=coxph(Surv(chldage,hospital)~Z+alcohol ,data=d2)
+summary(mod3)
+```
+
+**Modèle 4 : inclut la consommation de tabac de la mère**  
+Selon les résultats obtenus (cf.ci-après), la variable Z est toujours très significative. La consommation de tabac de la mère pendant sa grossesse apparait comme signficative.(cf. p-values).
+
+```{r mod4}
+mod4=coxph(Surv(chldage,hospital)~Z+smoke,data=d2)
+summary(mod4)
+```
+
+**Modèle 5 : inclut la région d'habitation de la mère**  
+Selon les résultats obtenus (cf.ci-après), la variable Z est toujours très significative. Mais la région d'habitation de la mère n'apparait pas comme signficative.(cf. p-values). 
+
+```{r mod5}
+mod5=coxph(Surv(chldage,hospital)~Z+region ,data=d2)
+summary(mod5)
+```
+
+**Modèle 6 : inclut l'indicateur de poids à la naissance de l'enfant**  
+Selon les résultats obtenus (cf.ci-après), la variable Z est toujours très significative. Et le poids du bébé à la naissance apparait comme faiblement signficatif.(cf. p-values)
+
+```{r mod6}
+mod6=coxph(Surv(chldage,hospital)~Z+bweight ,data=d2)
+summary(mod6)
+```
+
+**Modèle 7 : inclut l'indice de pauvreté de la mère**  
+Selon les résultats obtenus (cf.ci-après), la variable Z est toujours très significative. Mais l'indice de pauvreté de la mère n'apparait pas comme signficatif.(cf. p-values)
+
+```{r mod7}
+mod7=coxph(Surv(chldage,hospital)~Z+poverty ,data=d2)
+summary(mod7)
+```
+
+**Modèle 8 : inclut l'ethnie de la mère**
+Selon les résultats obtenus (cf.ci-après), la variable Z est toujours très significative. Mais l'ethnie de la mère n'apparait pas comme signficative.(cf. p-values)
+
+```{r mod8}
+mod8=coxph(Surv(chldage,hospital)~Z+race,data=d2)
+summary(mod8)
+```
+
+**Modèle 9 : inclut nombre de frères et soeurs du nouveau né**  
+Selon les résultats obtenus (cf.ci-après), la variable Z est toujours très significative. Mais le nombre de frères et soeurs de l'enfant n'apparait comme signficatif.(cf. p-values)
+
+```{r mod9}
+mod9=coxph(Surv(chldage,hospital)~Z+nsibs,data=d2)
+summary(mod9)
+```
+
+
+### Q6 : Modèle de Cox multivarié avec la variable Z
+
+**Modèle 10 : inclut toutes les variables **  
+```{r mod10}
+mod10=coxph(Surv(chldage,hospital)~Z+mthage+urban+alcohol+smoke+region+poverty+bweight+race+ education+nsibs,data=d2)
+summary(mod10)
+```
+
+**selection de modèle par AIC ** 
+```{r selecmod}
+stepAIC(mod10,trace = F)
+```
+
+
+**Modèle 11 : modèle final **  
+Il s'agit du modèle proposé par le stepAIC (variables dont les coefficients sont significativement différents de 0) :  
+
+   - Z : allaitement ou non de l'enfant  
+   - mthage : age de la mère à la naissance de l'enfant  
+   - smoke : la consommation de tabac de la mère pendant sa grossesse  
+   - nsibs : le nombre de frères et soeurs du nouveau né  
+  
+```{r mod11}
+mod11=coxph(Surv(chldage,hospital)~Z+mthage+smoke+nsibs,data=d2)
+summary(mod11)
+```
+
+Le risque d'hospitalisation est ici influencé positivement par ces 4 variables : le risque est plus important lorsque le niveau d'une de ces variables augmente. (c'est lié aux exp(coef) >0)
+Par exemple, si la mère est plus agée d'un an lors de son accouchement, le risque d'hospitalisation du bébé pour traiter une pneumonie augmente de 0.88602.  
+
+L'augmentation du risque est influencée, en ordre d'importance :   
+
+   - en premier : par la consommation de tabac de la mère (exp(coef)=2.11429 et 1.87911),  
+   - en second : par le nombre de frères et soeurs de l'enfant (exp(coef)=1.46980),  
+   - en troisième : par l'age de sa mère à la naissance de l'enfant (exp(coef)=0.88602),  
+   - en quatrième : par le fait que l'enfant ait été allaité (exp(coef)=0.41425).  
+
+
+### Q7 : Prévision 
+
+Il s'agit de prévoir à partir du modèle multivarié de Cox (modèle 10), la probabilité de ne pas développer la pneumonie à 6 mois pour un enfant. 
+
+La prediction est à faire sur l'individu suivant : enfant dont la mère avait 27 ans à sa naissance (*mthage=27*), est de peau blanche (*race=1*), vit en ville (*urban*=1) dans la region centre Nord (*region=2*), a fait 12 ans d'études (*education=12*), est considérée comme pauvre (*poverty=1*). Elle a consommé entre 2-3 verres d'alcool/mois (*alcohol=3*) et n'a pas fumé (*smoke=0*) pendant sa grossesse. L'enfant a 4 mois, pesait moins de 3kg à la naissance (*bweight=0*), n'a pas été allaité (*wmonth=0*) et n'a pas encore pris d'alimentation solide (*sfmonth=0*), il a 1 frère ou 1 soeur (*nsibs=1*).
+
+```{r predic}
+dpred=data.frame(
+  mthage=c(27),
+  urban=c('1'),
+  alcohol=c('3'),
+  smoke=c('0'),
+  region=c('2'),
+  poverty=c('1'),
+  bweight=c(0),
+  race=c('1'),
+  education=c(12),
+  nsibs=c(1),
+  wmonth=c(0),
+  sfmonth=c(0),
+  agepn=c(4),
+  Z=c(0)
+  )
+marqueurs = predict(mod11,newdata=dpred)
+prediction = survfit(mod11)
+#cbind(prediction$time,prediction$cumhaz)
+summary(prediction)
+
+```
+
+La probabilité de ne pas développer la pneumonie à 6 mois pour cet enfant est de 98.5% (=survival/time=6).
+
