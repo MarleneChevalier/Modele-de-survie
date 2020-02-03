@@ -1,0 +1,291 @@
+---
+title: "Modèle de survie - Rechute du cancer du sein"
+author: "Marlène Chevalier"
+date: "3 février 2020"
+output: 
+ html_document:
+    toc: yes
+---
+
+<style type="text/css">
+body{ /* Normal  */
+font-size: 13px;
+}
+td {  /* Table  */
+font-size: 12px;
+}
+h1.title {
+font-size: 26px;
+color: Blue;
+}
+
+h1 { /* Header 1 */
+font-size: 20px;
+color: Blue;
+}
+h2 { /* Header 2 */
+font-size: 16px;
+color: Blue;
+}
+h3 { /* Header 3 */
+font-size: 14px;
+font-family: "Times New Roman", Times, serif;
+color: Blue;
+}
+</style>
+
+```{r setup, include=FALSE,echo=FALSE}
+knitr::opts_chunk$set(echo = FALSE,warning = FALSE,include=TRUE)
+```
+
+```{r libra}
+library(KMsurv)
+library(tidyverse)
+library(survival)
+library(ggplot2)
+library(MASS)
+library("ggfortify")
+library(forecast)
+library(ROCR)
+```
+
+
+## Sujet : Probabilité de rechute du cancer du sein
+
+Le jeu de données wpbc (disponible sur https://archive.ics.uci.edu/ml/machine-learningdatabases/breast-cancer-wisconsin/wpbc.data). Ilestprésentésurhttps://archive.ics.uci.edu/ml/machinelearning-databases/breast-cancer-wisconsin/wpbc.names.  
+On souhaite prévoir la probabilité de rechute (“recurrent”) à 24 mois. Pour cela, vous comparerez les méthodes de l’analyse de survie (modèles de Cox, survival random forests, ...) aux méthodes de classification. Les mesures de performances (notamment l’AUC) se feront sur un sous-échantillon de test formé de 20 à 30% des données (attention à bien stratifier !).
+
+## Données
+Le jeu de données est issu du programme de suivi du cancer du sein à l'université du Wisconcin: Wisconsin Prognostic Breast Cancer (WPBC).  
+Les données proviennent d'images de la masse mammaire et décrivent les caractéristiques des noyaux cellulaires présents dans l’image.
+Chaque enregistrement représente des patientes suivies pour un cancer du sein sans signe de métastases au moment du diagnostic.
+
+```{r chargt}
+d=read.csv(file="wpbc.data.csv",sep=",", dec=".", header=F)
+attach(d)
+nrow=nrow(d)
+nvar=length(d)
+
+d2=d
+detach(d)
+attach(d2)
+
+# renommage colonne
+colnames(d2)=c("id","rechute","tps.rechute","M.rayon","M.texture","M.perimetre","M.surface","M.regularite","M.compacite","M.concavite","M.nbptconc","M.symetrie","M.dimfrac","SE.rayon","SE.texture","SE.perimetre","SE.surface","SE.regularite","SE.compacite","SE.concavite","SE.nbptconc","SE.symetrie","SE.dimfrac","W.rayon","W.texture","W.perimetre","W.surface","W.regularite","W.compacite","W.concavite","W.nbptconc","W.symetrie","W.dimfrac","taille","nbgan")
+
+#modif format : id, rechute en factor /autres covariables en numerique ou integer
+#d2$id=factor(d2$id)
+d2$nbgan=as.numeric(recode(as.character(d2$nbgan),"?"=""))
+```
+	
+Le jeu de données comporte 	`r nrow`  lignes (patientes en suivi) et `r nvar` covariables.
+
+Les colonnes 1, 2 et 3 :  
+  -  id : numéro d'identification de la patiente  
+  -  **rechute** : indicateur de récidive (R:récidive / N:pas de récidive)  
+  -  **tps.rechute** : délai en mois avant récidive (si recur = R) / temps de remission en mois (si recur = N)   
+Le nombre de récidives observées est de 47, soit 23.7% de l'échantillon.
+   
+Les colonnes 4 à 13 sont les moyennes des 10 caractéristiques relevées sur les noyaux des cellules :  
+  -  rayon   
+  -  texture  
+  -  périmètre  
+  -  surface  
+	-  régularité  
+	-  compacité  
+	-  concavité  
+	-  nombre de point concaves  
+	-  symétrie  
+	-  dimension fractale  
+	
+Les colonnes 14 à 23 sont les écarts types de ces 10 caractéristiques. 
+Les colonnes 24 à 33 sont les valeurs les plus basses ou plus hautes de ces 10 caractéristiques.  
+Les colonnes 34 et 35 (observées au moment de l'opération):  
+  -  taille de la tumeur  
+	-  nombre de ganglions lymphatiques axillaires positifs  
+
+
+## Question 1 : Création du label  
+
+La survie sera ici la probabilité pour une patiente de faire une rechute du cancer du sein après un certain nombre de mois de remission (tps.rechute).
+
+```{r label, echo=TRUE}
+d2$rechute = as.factor(recode(d2$rechute, "N"=0,"R"=1))
+summary(d2)
+```
+
+
+
+```{r survKM}
+
+#KM_fit=survfit(Surv(tps.rechute,rechute)~id,data=d2)
+#class(KM_fit)
+#autoplot(KM_fit,xlab="délai (en mois)", ylab="Survie : Probabilité de rechute", main="Probabilité de faire une rechute du cancer du sein")
+#summary(KM_fit)
+```
+
+## Question 2 : Création de jeux de données d'entrainement et de test
+
+Les jeux de données train et test sont obtenus en séparant les données en 2 groupes : l'ensemble des patientes en rechute et l'ensemble des patientes en rémission.
+Dans chaque ensemble, on selectionne alétoirement 70% des lignes que l'on attribue à l'échantillon train et par complémentarité le reste va dans l'echantillon test.
+
+```{r echant,echo=TRUE}
+# séparation en 2 : patientes en rechute et patientes en remission 
+d2_remission=d2[d2$rechute==0,]
+d2_rechute=d2[d2$rechute==1,]
+
+#echantillons train et test sur l'ensemble rechute
+set.seed(102623)
+indchu=sample(2, nrow(d2_rechute), replace=T, prob=c(0.7,0.3))
+train_rechute=d2_rechute[indchu==1,] # training = 70%
+test_rechute=d2_rechute[indchu==2,] # test = 30%
+
+#echantillons train et test sur l'ensemble rémission
+set.seed(102)
+indrem=sample(2, nrow(d2_remission), replace=T, prob=c(0.7,0.3))
+train_remission=d2_remission[indrem==1,] # training = 70%
+test_remission=d2_remission[indrem==2,] # test = 30%
+
+# rassemblement des 2 parties de chaque echantillon : creation des dataframes train et test
+train=rbind(train_rechute,train_remission)
+test=rbind(test_rechute,test_remission)
+
+row.train=nrow(train)
+row.test=nrow(test)
+tr.rechute=table(train$rechute)
+te.rechute=table(test$rechute)
+```
+
+L'échantillon **train** est constitué de `r row.train` lignes (soit 70% du jeu de données). `r tr.rechute[2]` récidives dans cet échantillon, soit 23.7%.  
+L'échantillon **test** est constitué de `r row.test` lignes (soit 30% du jeu de données).`r te.rechute[2]` récidives dans cet échantillon, soit 23.7%.  
+ 
+Les jeux de données test et train respectent la structure du jeux de données wpbc.
+Nous utiliserons l'échantillon **train pour construire et sélectionner le modèle** et l'échantillon **test pour valider le modèle**.
+
+
+## Question 3 : Modèle de Cox et Modèle de régression logistique
+
+**Modèle de Cox **  
+
+Evaluons d'abord un modèle de Cox sur l'ensemble des covariables.
+```{r modcox}
+cox.mod0=coxph(Surv(tps.rechute,as.numeric(rechute))~M.rayon+M.texture+M.perimetre+M.surface+M.regularite+M.compacite+M.concavite+M.nbptconc+M.symetrie+M.dimfrac+SE.rayon+SE.texture+SE.perimetre+SE.surface+SE.regularite+SE.compacite+SE.concavite+SE.nbptconc+SE.symetrie+SE.dimfrac+W.rayon+W.texture+W.perimetre+W.surface+W.regularite+W.compacite+W.concavite+W.nbptconc+W.symetrie+W.dimfrac+taille+nbgan,data=train)
+#summary(cox.mod0)
+```
+Le test de Wald permet d'évaluer la signicativité des covariables : ici il indique une p-value importante (=0.3), ce qui signifie qu'au moins un coefficient d'une covariable est non significativement différent de 0. Ici étant donné que toutes les covariables sont impliquées, cette constatation n'est pas très étonnante. Il faudrait réduire leur nombre.
+
+Sélectionnons les variables explicatives les plus pertinentes en utilisant la fonction *StepAIC*. Cette méthode teste chaque variable et conserve celles qui améliorent le modèle selon le critère AIC (minimisation de AIC).
+
+```{r coxaic,echo=TRUE}
+cox.stepAIC=stepAIC(cox.mod0, direction="both",trace = F)
+#summary(cox.stepAIC)
+cox.mod1=coxph(Surv(tps.rechute,as.numeric(rechute))~M.rayon+M.texture+M.perimetre+M.compacite+SE.texture+SE.surface+SE.compacite+SE.concavite+SE.symetrie+W.rayon+W.texture+W.perimetre+W.surface+W.regularite+W.compacite+W.concavite+nbgan,data=train)
+
+```
+
+La significativité du modèle obtenu par StepAIC est bien meilleure : la p-value du test de Wald est de 0.03. Tous les coefficients sont donc significativement différents de 0.
+Ce modèle est constitué de 17 variables explicatives :
+
+  - M.rayon      
+  - M.texture    
+  - M.perimetre  
+  - M.compacite   
+  - SE.texture   
+  - SE.surface   
+  - SE.compacite  
+  - SE.concavite  
+  - SE.symetrie  
+  - W.rayon  
+  - W.texture      
+  - W.perimetre   
+  - W.surface   
+  - W.regularite  
+  - W.compacite   
+  - W.concavite  
+  - nbgan    
+
+```{r plotfit,echo=TRUE}
+plot(survfit(cox.mod1))
+
+```
+
+**Regression logistique**
+
+```{r reglog,echo=TRUE}
+reg.modO=glm(rechute~.,data=train,family=binomial)
+#summary(reg.modO)
+```
+
+La regression logistique sur le modèle complet donne un AIC de 121.
+
+```{r regaic,echo=TRUE}
+reg.aic=stepAIC(reg.modO, direction="both",trace = F)
+#summary(reg.aic)
+```
+
+La méthode de selection de variables sur critère AIC de la regression linéaire sélectionne 24 covariables :    
+tps.rechute + M.rayon + M.texture + M.surface + M.regularite + M.compacite + M.nbptconc + M.symetrie + M.dimfrac + SE.rayon + SE.texture + SE.perimetre + SE.compacite + SE.concavite + 
+SE.nbptconc + SE.symetrie + SE.dimfrac + W.rayon + W.texture + W.perimetre + W.surface + W.concavite + W.symetrie + taille + nbgan
+
+Le critère AIC est meilleur après sélection de ces 24 covariables (AIC à 106) que sur le modèle complet.
+
+## Question 4 : Prédire la rechute à 24 mois
+
+**Modèle de Cox issu de stepAIC (17 covariables)**
+
+```{r predcox}
+#prediction avec cox
+cox.pred = predict(cox.stepAIC,newdata=test)
+
+#regroupement des données test et des prédictions par cox
+cox.pred.df=data.frame(cox.pred)
+test.wpredcox=cbind(test,cox.pred.df)
+head(test)
+head(cox.pred.df)
+head(test.wpredcox)
+
+#plot(prediction)
+#pred
+#summary(prediction)
+#summary(pred)
+#cbind(prediction$time,prediction$cumhaz)
+#summary(cox.pred)
+```
+
+**Régression logistique issue de stepAIC (24 covariables)**
+
+```{r predglm}
+#prediction avec glm
+reg.pred=predict(reg.aic,newdata=test,type = "response")
+
+#regroupement des données test et des prédictions par glm
+reg.pred.df=data.frame(reg.pred)
+test.wpredreg=cbind(test,reg.pred.df)
+
+
+
+```
+
+
+## Question 5 : Comparer les modèles (Accuracy et AUC)
+
+**Régression logistique : matrice de confusion et accuracy** 
+```{r accglm}
+#matrice de confusion de glm
+reg.mat.conf=as.matrix(table(round(test.wpredreg$reg.pred),test.wpredreg$rechute))
+reg.mat.conf
+#calcul de l'accuracy
+n.reg.mat.conf=sum(reg.mat.conf)
+diag.reg.mat.conf=diag(reg.mat.conf)
+acc.reg=sum(diag.reg.mat.conf)/n.reg.mat.conf
+acc.reg
+```
+
+```{r roc glm}
+
+```
+
+
+
+
+## Conclusion
